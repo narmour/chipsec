@@ -84,6 +84,7 @@ LZMA  = efi_compressor.LzmaDecompress
 Tiano = efi_compressor.TianoDecompress
 EFI   = efi_compressor.EfiDecompress
 
+MAX_IOCTL_SIZE = 1024
 
 class MemoryMapping(mmap.mmap):
     """Memory mapping based on Python's mmap.
@@ -341,11 +342,24 @@ class LinuxHelper(Helper):
 
     def write_phys_mem(self, phys_address_hi, phys_address_lo, length, newval):
         if newval is None: return None
+        res = 0
         addr = (phys_address_hi << 32) | phys_address_lo
-        in_buf = struct.pack('2'+self._pack,addr,length)+str(newval)
-        out_buf = self.ioctl(IOCTL_WRITE_PHYSMEM, in_buf)
-        res = struct.unpack('Q',out_buf[:8])
-        return res[0]
+        bytes_done = 0
+        while bytes_done < length:
+            # Determine how much to write
+            chunk_size = MAX_IOCTL_SIZE - (2 * struct.calcsize(self._pack))
+            if bytes_done + chunk_size > length:
+                chunk_size = length - bytes_done
+
+            # Write the data
+            in_buf = struct.pack('2'+self._pack,addr,chunk_size) + str(newval)[bytes_done:bytes_done + chunk_size]
+            out_buf = self.ioctl(IOCTL_WRITE_PHYSMEM, in_buf)
+            res += struct.unpack('Q',out_buf[:8])[0]
+
+            # Update to write the next chunk
+            addr += chunk_size
+            bytes_done += chunk_size
+        return res
 
     def native_write_phys_mem(self, phys_address_hi, phys_address_lo, length, newval):
         if newval is None: return None
@@ -357,13 +371,27 @@ class LinuxHelper(Helper):
                 logger().error("Cannot write %s to memory %016x (wrote %d of %d)" % (newval, addr, written, length))
 
     def read_phys_mem(self, phys_address_hi, phys_address_lo, length):
+        ret = str()
         addr = (phys_address_hi << 32) | phys_address_lo
-        in_buf = struct.pack( '3'+self._pack,addr,length,0 )
-        if len(in_buf) < length:
-            in_buf += (length - len(in_buf)) * 'A'
-        out_buf = self.ioctl(IOCTL_READ_PHYSMEM, in_buf)
-        ret = struct.unpack(str(length)+'s', out_buf[:length])
-        return ret[0]
+        bytes_left = length
+        while bytes_left > 0:
+            # Determine how much to read
+            chunk_size = MAX_IOCTL_SIZE
+            if bytes_left < MAX_IOCTL_SIZE:
+                chunk_size = bytes_left
+
+            # Read the data chunk
+            in_buf = struct.pack( '3'+self._pack,addr,chunk_size,0 )
+            if len(in_buf) < chunk_size:
+                in_buf += (chunk_size - len(in_buf)) * 'A'
+            out_buf = self.ioctl(IOCTL_READ_PHYSMEM, in_buf)
+            ret_chunk = struct.unpack(str(chunk_size)+'s', out_buf[:chunk_size])
+            ret += ret_chunk[0]
+
+            # Update to read next block
+            addr += chunk_size
+            bytes_left -= chunk_size
+        return ret
 
     def native_read_phys_mem(self, phys_address_hi, phys_address_lo, length):
         if self.devmem_available():
