@@ -1298,27 +1298,32 @@ static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioc
 	{
 		// IN params : physical address, length, ptr to buffer
 		// OUT params : length
-		uint64_t 	NumberofBytes;
-		phys_addr_t 	pa;
-		char 		*va;
-		char		*buffer; 
+		uint64_t	NumberofBytes;
+		phys_addr_t	pa;
+		uint8_t		*va;
+		uint8_t		*buffer; 
 		uint64_t	i;
 
 		NumberofBytes = 0;
-		numargs = 3;
+		numargs = 2;	// Only including the nuber of fixed size arguments
 
 		printk( KERN_INFO "[chipsec] > WRITEMEM\n");
 
+		// Only fetch the two fixed size parameters first then determine actual copy size
 		if(copy_from_user((void*)ptrbuf, (void*)ioctl_param, (sizeof(long) * numargs)) > 0)
 		{
 			printk( KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER\n" );
 			return -EFAULT;
 		}
-
-		pa = ptr[0];
-		va = my_xlate_dev_mem_ptr(pa);
+		if(copy_from_user((void*)ptrbuf, (void*)ioctl_param, (sizeof(long) * numargs) + ptr[1]))
+		{
+			printk( KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER (Write Data Size)");
+			return -EFAULT;
+		}
 		NumberofBytes = ptr[1];
 		buffer = (void*)&ptr[2];
+		pa = ptr[0];
+		va = my_xlate_dev_mem_ptr(pa);
 
 		//Copy from user was causing issues 
 		for(i=0;i<NumberofBytes;i++){
