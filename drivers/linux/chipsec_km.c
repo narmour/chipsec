@@ -750,6 +750,9 @@ void print_stat(efi_status_t stat)
 #endif
 }
 
+#define MAX_DATA_BUFFER_SIZE 1024
+uint8_t data_buffer[MAX_DATA_BUFFER_SIZE];
+
 static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
 {
 	int numargs = 0;
@@ -1048,6 +1051,7 @@ static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioc
               	}
 		
 		dt_pa.quadpart = virt_to_phys((void*)dtr.base);
+
 		ptr[0] = dtr.limit;
         #ifdef __x86_64__
 		ptr[1] = (uint32_t)(dtr.base >> 32);
@@ -1267,11 +1271,12 @@ static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioc
 		// IN params : physical address, length
 		// OUT params : ptr to buffer
 		uint64_t NumberofBytes = 0;
-		phys_addr_t pa;
-		void *va; 
+		uint64_t i;
+		phys_addr_t	pa;
+		uint8_t		*va;
 
 		NumberofBytes = 0;
-		numargs = 3;
+		numargs = 2;
 
 		printk( KERN_INFO "[chipsec] > READMEM\n");
 
@@ -1280,17 +1285,27 @@ static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioc
 			printk( KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER\n" );
 			return -EFAULT;
 		}
-
-		pa = ptr[0];
-		va = my_xlate_dev_mem_ptr(pa);
 		NumberofBytes = ptr[1];
-
-		if ( copy_to_user((void*)ioctl_param,va,NumberofBytes) > 0){
-			printk( KERN_ALERT "[chipsec] ERROR: STATUS_UNSUCCESSFUL - could not read memory");
-			my_unxlate_dev_mem_ptr(pa,va);
+		if (NumberofBytes > MAX_DATA_BUFFER_SIZE) {
+			printk(KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER (Read data size)\n");
 			return -EFAULT;
 		}
+		pa = ptr[0];
+		va = my_xlate_dev_mem_ptr(pa);
+		if (va == NULL) {
+			printk(KERN_ALERT "[chipsec] Failed to convert PA to VA.\n");
+			return -EFAULT;
+		}
+
+		for (i = 0; i < NumberofBytes; i++) {
+			data_buffer[i] = va[i];
+		}
+
 		my_unxlate_dev_mem_ptr(pa,va);
+		if ( copy_to_user((void*)ioctl_param, (void*)data_buffer, NumberofBytes) > 0){
+			printk( KERN_ALERT "[chipsec] ERROR: STATUS_UNSUCCESSFUL - could not read memory");
+			return -EFAULT;
+		}
 		break;
 	}
 
@@ -1301,7 +1316,7 @@ static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioc
 		uint64_t	NumberofBytes;
 		phys_addr_t	pa;
 		uint8_t		*va;
-		uint8_t		*buffer; 
+		uint8_t		*cmd_data; 
 		uint64_t	i;
 
 		NumberofBytes = 0;
@@ -1315,19 +1330,28 @@ static long d_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioc
 			printk( KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER\n" );
 			return -EFAULT;
 		}
-		if(copy_from_user((void*)ptrbuf, (void*)ioctl_param, (sizeof(long) * numargs) + ptr[1]))
-		{
-			printk( KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER (Write Data Size)");
+		NumberofBytes = ptr[1];
+		if (NumberofBytes > MAX_DATA_BUFFER_SIZE) {
+			printk(KERN_ALERT "[chipsec] ERROR: Data buffer too big\n");
 			return -EFAULT;
 		}
-		NumberofBytes = ptr[1];
-		buffer = (void*)&ptr[2];
+		cmd_data = (void*)ioctl_param;
+		cmd_data += sizeof(long) * numargs;
+		if(copy_from_user((void*)data_buffer, (void*)cmd_data, NumberofBytes))
+		{
+			printk( KERN_ALERT "[chipsec] ERROR: STATUS_INVALID_PARAMETER (Write Data Size)\n");
+			return -EFAULT;
+		}
 		pa = ptr[0];
 		va = my_xlate_dev_mem_ptr(pa);
+		if (va == NULL) {
+			printk(KERN_ALERT "[chipsec] Failed to convert PA to VA.\n");
+			return -EFAULT;
+		}
 
 		//Copy from user was causing issues 
 		for(i=0;i<NumberofBytes;i++){
-			va[i] = buffer[i];
+			va[i] = data_buffer[i];
 		}
 
 		my_unxlate_dev_mem_ptr(pa,va);
